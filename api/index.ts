@@ -8,44 +8,75 @@ const origins = (process.env.ORIGIN ?? "")
 
 const io = new Server({
   cors: {
-    origin: origins
+    origin: "*" // Permitir todos los orígenes para desarrollo local
   }
 });
 
-const port = Number(process.env.PORT);
+const port = Number(process.env.PORT) || 3001; // Puerto 3001 por defecto
 
 io.listen(port);
-console.log(`Server is running on port ${port}`);
+console.log(`=`.repeat(50));
+console.log(`[SERVER] WebRTC Signaling server running on port ${port}`);
+console.log(`[CORS] Enabled for all origins`);
+console.log(`[MODE] Multiple rooms - 2 users per room`);
+console.log(`=`.repeat(50));
 
-let peers: any = {};
+let rooms: Record<string, Set<string>> = {};
+const MAX_PEERS_PER_ROOM = 2;
+const DEFAULT_ROOM = "main-room";
 
 io.on("connection", (socket) => {
-  if (!peers[socket.id]) {
-    peers[socket.id] = {};
-    socket.emit("introduction", Object.keys(peers));
-    io.emit("newUserConnected", socket.id);
-    console.log(
-      "Peer joined with ID",
-      socket.id,
-      ". There are " + io.engine.clientsCount + " peer(s) connected."
-    );
+  const roomId = DEFAULT_ROOM;
+  
+  // Inicializar sala si no existe
+  if (!rooms[roomId]) {
+    rooms[roomId] = new Set();
+  }
+  
+  const currentPeerCount = rooms[roomId].size;
+  
+  // Limitar a 2 usuarios por sala
+  if (currentPeerCount >= MAX_PEERS_PER_ROOM) {
+    console.log(`[REJECTED] Room ${roomId} is full (${currentPeerCount}/${MAX_PEERS_PER_ROOM})`);
+    socket.emit("roomFull", { message: "Room is full. Only 2 users allowed." });
+    socket.disconnect(true);
+    return;
   }
 
+  // Agregar usuario a la sala
+  rooms[roomId].add(socket.id);
+  socket.join(roomId);
+  
+  const peersInRoom = Array.from(rooms[roomId]).filter(id => id !== socket.id);
+  socket.emit("introduction", peersInRoom);
+  socket.to(roomId).emit("newUserConnected", socket.id);
+  
+  console.log(
+    `[CONNECT] Peer ${socket.id.substring(0, 8)}... joined room ${roomId}. Users: ${rooms[roomId].size}/${MAX_PEERS_PER_ROOM}`
+  );
+
   socket.on("signal", (to, from, data) => {
-    if (to in peers) {
-      io.to(to).emit("signal", to, from, data);
-    } else {
-      console.log("Peer not found!");
-    }
+    io.to(to).emit("signal", to, from, data);
+    console.log(`[SIGNAL] From ${from.substring(0, 8)}... to ${to.substring(0, 8)}...`);
   });
 
   socket.on("disconnect", () => {
-    delete peers[socket.id];
-    io.sockets.emit("userDisconnected", socket.id);
-    console.log(
-      "Peer disconnected with ID",
-      socket.id,
-      ". There are " + io.engine.clientsCount + " peer(s) connected."
-    );
+    const roomId = DEFAULT_ROOM;
+    
+    if (rooms[roomId]) {
+      rooms[roomId].delete(socket.id);
+      
+      // Notificar a los demás usuarios de la sala
+      socket.to(roomId).emit("userDisconnected", socket.id);
+      
+      console.log(
+        `[DISCONNECT] Peer ${socket.id.substring(0, 8)}... left room ${roomId}. Users: ${rooms[roomId].size}/${MAX_PEERS_PER_ROOM}`
+      );
+      
+      // Limpiar sala vacía
+      if (rooms[roomId].size === 0) {
+        delete rooms[roomId];
+      }
+    }
   });
 });
