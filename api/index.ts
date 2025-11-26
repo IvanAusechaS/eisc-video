@@ -22,6 +22,7 @@ console.log(`[MODE] Multiple rooms - 2 users per room`);
 console.log(`=`.repeat(50));
 
 let rooms: Record<string, Set<string>> = {};
+let peerIds: Record<string, string> = {}; // Mapear socketId -> peerId
 const MAX_PEERS_PER_ROOM = 2;
 const DEFAULT_ROOM = "main-room";
 
@@ -47,13 +48,28 @@ io.on("connection", (socket) => {
   rooms[roomId].add(socket.id);
   socket.join(roomId);
   
-  const peersInRoom = Array.from(rooms[roomId]).filter(id => id !== socket.id);
-  socket.emit("introduction", peersInRoom);
-  socket.to(roomId).emit("newUserConnected", socket.id);
-  
   console.log(
     `[CONNECT] Peer ${socket.id.substring(0, 8)}... joined room ${roomId}. Users: ${rooms[roomId].size}/${MAX_PEERS_PER_ROOM}`
   );
+
+  // Cuando un usuario registra su Peer ID
+  socket.on("registerPeerId", (peerId: string) => {
+    peerIds[socket.id] = peerId;
+    console.log(`[PEER_ID] ${socket.id.substring(0, 8)}... registered Peer ID: ${peerId.substring(0, 8)}...`);
+    
+    // Informar a otros usuarios en la sala del nuevo Peer ID
+    const otherPeersInRoom = Array.from(rooms[roomId]).filter(id => id !== socket.id);
+    otherPeersInRoom.forEach(otherId => {
+      const otherPeerId = peerIds[otherId];
+      if (otherPeerId) {
+        // Enviar al nuevo usuario el Peer ID del usuario existente
+        socket.emit("remotePeerId", otherPeerId);
+        // Enviar al usuario existente el Peer ID del nuevo usuario
+        io.to(otherId).emit("remotePeerId", peerId);
+        console.log(`[EXCHANGE] Exchanged Peer IDs between ${peerId.substring(0, 8)}... and ${otherPeerId.substring(0, 8)}...`);
+      }
+    });
+  });
 
   socket.on("signal", (to, from, data) => {
     io.to(to).emit("signal", to, from, data);
@@ -65,6 +81,7 @@ io.on("connection", (socket) => {
     
     if (rooms[roomId]) {
       rooms[roomId].delete(socket.id);
+      delete peerIds[socket.id]; // Limpiar Peer ID
       
       // Notificar a los demás usuarios de la sala
       socket.to(roomId).emit("userDisconnected", socket.id);
