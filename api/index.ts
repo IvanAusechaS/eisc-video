@@ -52,8 +52,11 @@ io.on("connection", (socket) => {
     `[CONNECT] Peer ${socket.id.substring(0, 8)}... joined room ${roomId}. Users: ${rooms[roomId].size}/${MAX_PEERS_PER_ROOM}`
   );
 
-  // Notificar a todos en la sala el número de usuarios
+  // Notificar a todos en la sala el número de usuarios (incluyendo al que acaba de conectarse)
   io.to(roomId).emit("userCount", rooms[roomId].size);
+  
+  // También enviar directamente al socket que se conectó para asegurar que recibe el conteo
+  socket.emit("userCount", rooms[roomId].size);
 
   // Cuando un usuario registra su Peer ID
   socket.on("registerPeerId", (peerId: string) => {
