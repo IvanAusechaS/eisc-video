@@ -63,8 +63,9 @@ const io = new socket_io_1.Server(server, {
 });
 // ============ PEERJS SERVER ============
 // ✅ Mount PeerJS at /peerjs with Heroku proxy support
+// CRITICAL: When using app.use("/peerjs", ...), the path parameter must be "/"
 const peerServer = (0, peer_1.ExpressPeerServer)(server, {
-    path: "/peerjs",
+    path: "/",
     debug: true,
     proxied: true, // required for Heroku reverse proxy
     allow_discovery: true
