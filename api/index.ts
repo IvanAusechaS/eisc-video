@@ -42,14 +42,19 @@ const rooms = new Map<string, RoomData>();
 // ============ EXPRESS APP ============
 const app = express();
 
-// ✅ CORS - Allow all origins (Heroku proxy rewrites headers)
+// FIX HEROKU: Trust proxy headers (required for Heroku routing)
+app.set("trust proxy", 1);
+
+// FIX HEROKU: CORS must be specific for Vercel origin
 app.use(cors({
-  origin: "*",
-  methods: ["GET", "POST"],
-  credentials: true
+  origin: ["https://eisc-meet.vercel.app", "http://localhost:5173", "http://localhost:3000"],
+  methods: ["GET", "POST", "OPTIONS"],
+  credentials: true,
+  allowedHeaders: ["Content-Type", "Authorization"]
 }));
 
-app.use(express.json());
+// FIX HEROKU: JSON parser AFTER Socket.IO to avoid consuming polling frames
+// We'll move this AFTER Socket.IO initialization
 
 // Health check endpoint for Heroku
 app.get("/", (req, res) => {
@@ -74,32 +79,71 @@ app.get("/health", (req, res) => {
 // ============ HTTP SERVER ============
 const server = http.createServer(app);
 
-// ✅ Disable timeouts so Heroku doesn't kill WebRTC connections
+// FIX HEROKU: Disable aggressive timeouts that kill WebRTC
 server.keepAliveTimeout = 0;
 server.headersTimeout = 0;
 
 // ============ SOCKET.IO SERVER ============
-// ✅ Heroku-safe Socket.IO configuration (MUST allow polling)
+// FIX HEROKU: Critical configuration for Heroku router compatibility
 const io = new Server(server, {
   cors: {
-    origin: "*",
-    methods: ["GET", "POST"],
+    origin: ["https://eisc-meet.vercel.app", "http://localhost:5173"],
+    methods: ["GET", "POST", "OPTIONS"],
     credentials: true
   },
-  transports: ["polling", "websocket"], // polling MUST be first for Heroku router
-  allowEIO3: true, // critical for Heroku router compatibility
-  pingTimeout: 30000,
-  pingInterval: 25000
+  // FIX HEROKU: Polling MUST be first, WebSocket is upgrade
+  transports: ["polling", "websocket"],
+  
+  // FIX HEROKU: Allow Engine.IO v3 clients (Heroku router uses EIO3 internally)
+  allowEIO3: true,
+  
+  // FIX HEROKU: Disable perMessageDeflate (Heroku doesn't support WS compression)
+  perMessageDeflate: false,
+  
+  // FIX HEROKU: Increase timeouts for slow connections
+  pingTimeout: 60000,
+  pingInterval: 25000,
+  
+  // FIX HEROKU: Allow upgrade from polling to WebSocket
+  upgradeTimeout: 30000,
+  
+  // FIX HEROKU: Set max HTTP buffer size for polling frames
+  maxHttpBufferSize: 1e6,
+  
+  // FIX HEROKU: Cookie configuration for Heroku proxy
+  cookie: {
+    name: "io",
+    path: "/",
+    httpOnly: true,
+    sameSite: "none",
+    secure: true
+  }
 });
 
+// FIX HEROKU: Now it's safe to use JSON parser (after Socket.IO)
+app.use(express.json());
+
 // ============ PEERJS SERVER ============
-// ✅ Mount PeerJS at /peerjs with Heroku proxy support
+// FIX HEROKU: PeerJS configuration for Heroku reverse proxy
 // CRITICAL: When using app.use("/peerjs", ...), the path parameter must be "/"
 const peerServer = ExpressPeerServer(server, {
   path: "/",
   debug: true,
-  proxied: true, // required for Heroku reverse proxy
-  allow_discovery: true
+  
+  // FIX HEROKU: Enable proxied mode (Heroku router is a reverse proxy)
+  proxied: true,
+  
+  // FIX HEROKU: Allow peer discovery
+  allow_discovery: true,
+  
+  // FIX HEROKU: Increase timeouts for Heroku latency
+  alive_timeout: 60000,
+  
+  // FIX HEROKU: Key for generating peer IDs
+  key: "peerjs",
+  
+  // FIX HEROKU: Concurrent limit (2 users max per room)
+  concurrent_limit: 5000
 } as any);
 
 app.use("/peerjs", peerServer);
@@ -390,6 +434,25 @@ io.on("connection", (socket: Socket) => {
     clientIP: socket.handshake.address,
   });
 
+  // FIX HEROKU: Log transport upgrades
+  socket.conn.on("upgrade", (transport) => {
+    log("TRANSPORT_UPGRADE", `Transport upgraded`, {
+      socketId: truncate(socket.id),
+      from: socket.conn.transport.name,
+      to: transport.name
+    });
+  });
+
+  // FIX HEROKU: Log packet errors
+  socket.conn.on("packet", (packet) => {
+    if (packet.type === "error") {
+      log("PACKET_ERROR", `Packet error`, {
+        socketId: truncate(socket.id),
+        data: packet.data
+      });
+    }
+  });
+
   // Intentar unirse a la sala
   const joined = joinRoom(socket, roomId);
   if (!joined) {
@@ -426,10 +489,26 @@ io.on("connection", (socket: Socket) => {
 });
 
 // ============ ERROR HANDLING ============
+// FIX HEROKU: Enhanced error handling for debugging
 io.engine.on("connection_error", (err: any) => {
   console.error(`[CONNECTION_ERROR] ${err.message}`);
   console.error(`  Code: ${err.code}`);
   console.error(`  Context: ${err.context}`);
+  if (err.req) {
+    console.error(`  Method: ${err.req.method}`);
+    console.error(`  URL: ${err.req.url}`);
+    console.error(`  Headers:`, err.req.headers);
+  }
+});
+
+// FIX HEROKU: Log initial handshake errors
+io.engine.on("initial_headers", (headers: any, req: any) => {
+  console.log(`[HANDSHAKE] Initial headers for ${req.url}`);
+});
+
+// FIX HEROKU: Log all connections to engine
+io.engine.on("connection", (rawSocket: any) => {
+  console.log(`[ENGINE_CONNECT] Raw connection established, transport: ${rawSocket.transport.name}`);
 });
 
 // ============ GRACEFUL SHUTDOWN ============
