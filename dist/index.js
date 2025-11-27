@@ -1,78 +1,168 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 const socket_io_1 = require("socket.io");
+const peer_1 = require("peer");
+const express_1 = __importDefault(require("express"));
+const http_1 = __importDefault(require("http"));
 require("dotenv/config");
 const origins = (process.env.ORIGIN ?? "")
     .split(",")
-    .map(s => s.trim())
+    .map((s) => s.trim())
     .filter(Boolean);
-const io = new socket_io_1.Server({
+// Create Express app and HTTP server
+const app = (0, express_1.default)();
+const server = http_1.default.createServer(app);
+// Create Socket.IO server
+const io = new socket_io_1.Server(server, {
     cors: {
-        origin: "*" // Permitir todos los orígenes para desarrollo local
-    }
+        origin: "*", // Permitir todos los orígenes para desarrollo local
+    },
+});
+// Create PeerJS server
+const peerServer = (0, peer_1.ExpressPeerServer)(server, {
+    path: "/peerjs",
+});
+app.use("/peerjs", peerServer);
+// PeerServer event listeners
+peerServer.on("connection", (client) => {
+    console.log(`\n[PEERJS] Client connected: ${client.getId()}`);
+});
+peerServer.on("disconnect", (client) => {
+    console.log(`[PEERJS] Client disconnected: ${client.getId()}`);
 });
 const port = Number(process.env.PORT) || 3001; // Puerto 3001 por defecto
-io.listen(port);
+server.listen(port);
 console.log(`=`.repeat(50));
 console.log(`[SERVER] WebRTC Signaling server running on port ${port}`);
+console.log(`[PEERJS] PeerJS server running on /peerjs`);
 console.log(`[CORS] Enabled for all origins`);
 console.log(`[MODE] Multiple rooms - 2 users per room`);
+console.log(`[ENV] NODE_ENV: ${process.env.NODE_ENV || "development"}`);
+console.log(`[ENV] PORT: ${port}`);
 console.log(`=`.repeat(50));
 let rooms = {};
 let peerIds = {}; // Mapear socketId -> peerId
 const MAX_PEERS_PER_ROOM = 2;
 const DEFAULT_ROOM = "main-room";
+// Log estado cada 30 segundos
+setInterval(() => {
+    console.log(`[STATUS] Active rooms: ${Object.keys(rooms).length}`);
+    Object.keys(rooms).forEach((roomId) => {
+        console.log(`  - Room ${roomId}: ${rooms[roomId].size} users`);
+    });
+    console.log(`[STATUS] Total peer IDs registered: ${Object.keys(peerIds).length}`);
+}, 30000);
 io.on("connection", (socket) => {
     const roomId = DEFAULT_ROOM;
+    const timestamp = new Date().toISOString();
+    console.log(`\n${"=".repeat(60)}`);
+    console.log(`[${timestamp}] NEW CONNECTION`);
+    console.log(`  Socket ID: ${socket.id}`);
+    console.log(`  Client IP: ${socket.handshake.address}`);
+    console.log(`  User Agent: ${socket.handshake.headers["user-agent"]?.substring(0, 50)}...`);
     // Inicializar sala si no existe
     if (!rooms[roomId]) {
         rooms[roomId] = new Set();
+        console.log(`  Created new room: ${roomId}`);
     }
     const currentPeerCount = rooms[roomId].size;
+    console.log(`  Current peers in room: ${currentPeerCount}/${MAX_PEERS_PER_ROOM}`);
     // Limitar a 2 usuarios por sala
     if (currentPeerCount >= MAX_PEERS_PER_ROOM) {
-        console.log(`[REJECTED] Room ${roomId} is full (${currentPeerCount}/${MAX_PEERS_PER_ROOM})`);
+        console.log(`  ❌ REJECTED - Room ${roomId} is FULL (${currentPeerCount}/${MAX_PEERS_PER_ROOM})`);
         socket.emit("roomFull", { message: "Room is full. Only 2 users allowed." });
         socket.disconnect(true);
+        console.log(`${"=".repeat(60)}\n`);
         return;
     }
     // Agregar usuario a la sala
     rooms[roomId].add(socket.id);
     socket.join(roomId);
-    console.log(`[CONNECT] Peer ${socket.id.substring(0, 8)}... joined room ${roomId}. Users: ${rooms[roomId].size}/${MAX_PEERS_PER_ROOM}`);
+    console.log(`  ✅ ACCEPTED - User joined room ${roomId}`);
+    console.log(`  New peer count: ${rooms[roomId].size}/${MAX_PEERS_PER_ROOM}`);
+    console.log(`${"=".repeat(60)}\n`);
+    // Notificar a todos en la sala el número de usuarios (incluyendo al que acaba de conectarse)
+    io.to(roomId).emit("userCount", rooms[roomId].size);
+    // También enviar directamente al socket que se conectó para asegurar que recibe el conteo
+    socket.emit("userCount", rooms[roomId].size);
+    console.log(`[USER_COUNT] Broadcasted to room ${roomId}: ${rooms[roomId].size} users`);
     // Cuando un usuario registra su Peer ID
     socket.on("registerPeerId", (peerId) => {
         peerIds[socket.id] = peerId;
-        console.log(`[PEER_ID] ${socket.id.substring(0, 8)}... registered Peer ID: ${peerId.substring(0, 8)}...`);
+        const timestamp = new Date().toISOString();
+        console.log(`\n[${timestamp}] PEER_ID_REGISTERED`);
+        console.log(`  Socket: ${socket.id.substring(0, 8)}...`);
+        console.log(`  Peer ID: ${peerId.substring(0, 16)}...`);
         // Informar a otros usuarios en la sala del nuevo Peer ID
-        const otherPeersInRoom = Array.from(rooms[roomId]).filter(id => id !== socket.id);
-        otherPeersInRoom.forEach(otherId => {
-            const otherPeerId = peerIds[otherId];
-            if (otherPeerId) {
-                // Enviar al nuevo usuario el Peer ID del usuario existente
-                socket.emit("remotePeerId", otherPeerId);
-                // Enviar al usuario existente el Peer ID del nuevo usuario
-                io.to(otherId).emit("remotePeerId", peerId);
-                console.log(`[EXCHANGE] Exchanged Peer IDs between ${peerId.substring(0, 8)}... and ${otherPeerId.substring(0, 8)}...`);
-            }
-        });
+        const otherPeersInRoom = Array.from(rooms[roomId]).filter((id) => id !== socket.id);
+        console.log(`  Other peers in room: ${otherPeersInRoom.length}`);
+        if (otherPeersInRoom.length > 0) {
+            otherPeersInRoom.forEach((otherId) => {
+                const otherPeerId = peerIds[otherId];
+                if (otherPeerId) {
+                    // Enviar al nuevo usuario el Peer ID del usuario existente
+                    socket.emit("remotePeerId", otherPeerId);
+                    console.log(`  📤 Sent to new peer (${peerId.substring(0, 8)}...): remote peer ID ${otherPeerId.substring(0, 8)}...`);
+                    // Enviar al usuario existente el Peer ID del nuevo usuario
+                    io.to(otherId).emit("remotePeerId", peerId);
+                    console.log(`  📤 Sent to existing peer (${otherPeerId.substring(0, 8)}...): remote peer ID ${peerId.substring(0, 8)}...`);
+                    console.log(`  ✅ PEER EXCHANGE COMPLETE between ${peerId.substring(0, 8)}... and ${otherPeerId.substring(0, 8)}...`);
+                }
+                else {
+                    console.log(`  ⚠️ Other peer ${otherId.substring(0, 8)}... has no registered Peer ID yet`);
+                }
+            });
+        }
+        else {
+            console.log(`  ⏳ WAITING - ${peerId.substring(0, 8)}... is the only peer in the room`);
+        }
     });
     socket.on("signal", (to, from, data) => {
         io.to(to).emit("signal", to, from, data);
         console.log(`[SIGNAL] From ${from.substring(0, 8)}... to ${to.substring(0, 8)}...`);
     });
+    // Media toggle event (audio/video on/off)
+    socket.on("mediaToggle", (data) => {
+        const timestamp = new Date().toISOString();
+        console.log(`\n[${timestamp}] MEDIA_TOGGLE`);
+        console.log(`  Socket: ${socket.id.substring(0, 8)}...`);
+        console.log(`  Peer ID: ${data.peerId?.substring(0, 8)}...`);
+        console.log(`  Type: ${data.type.toUpperCase()}`);
+        console.log(`  Status: ${data.enabled ? "✅ ENABLED" : "❌ DISABLED"}`);
+        // Broadcast to other users in the room
+        socket.to(roomId).emit("mediaToggle", data);
+        console.log(`  📤 Broadcasted to other peers in room ${roomId}`);
+    });
     socket.on("disconnect", () => {
         const roomId = DEFAULT_ROOM;
+        const timestamp = new Date().toISOString();
+        console.log(`\n[${timestamp}] DISCONNECTION`);
+        console.log(`  Socket: ${socket.id.substring(0, 8)}...`);
         if (rooms[roomId]) {
             rooms[roomId].delete(socket.id);
-            delete peerIds[socket.id]; // Limpiar Peer ID
+            const disconnectedPeerId = peerIds[socket.id];
+            if (disconnectedPeerId) {
+                console.log(`  Peer ID: ${disconnectedPeerId.substring(0, 8)}...`);
+            }
+            delete peerIds[socket.id];
             // Notificar a los demás usuarios de la sala
             socket.to(roomId).emit("userDisconnected", socket.id);
-            console.log(`[DISCONNECT] Peer ${socket.id.substring(0, 8)}... left room ${roomId}. Users: ${rooms[roomId].size}/${MAX_PEERS_PER_ROOM}`);
+            console.log(`  📤 Notified other peers about disconnection`);
+            // Actualizar conteo de usuarios
+            io.to(roomId).emit("userCount", rooms[roomId].size);
+            console.log(`  📤 Updated user count to: ${rooms[roomId].size}`);
+            console.log(`  Remaining peers in room: ${rooms[roomId].size}/${MAX_PEERS_PER_ROOM}`);
             // Limpiar sala vacía
             if (rooms[roomId].size === 0) {
                 delete rooms[roomId];
+                console.log(`  🗑️ Room ${roomId} deleted (empty)`);
             }
+        }
+        else {
+            console.log(`  ⚠️ Socket was not in any room`);
         }
     });
 });

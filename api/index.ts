@@ -1,4 +1,7 @@
 import { Server } from "socket.io";
+import { ExpressPeerServer } from "peer";
+import express from "express";
+import http from "http";
 import "dotenv/config";
 
 const origins = (process.env.ORIGIN ?? "")
@@ -6,17 +9,39 @@ const origins = (process.env.ORIGIN ?? "")
   .map((s) => s.trim())
   .filter(Boolean);
 
-const io = new Server({
+// Create Express app and HTTP server
+const app = express();
+const server = http.createServer(app);
+
+// Create Socket.IO server
+const io = new Server(server, {
   cors: {
     origin: "*", // Permitir todos los orígenes para desarrollo local
   },
 });
 
+// Create PeerJS server
+const peerServer = ExpressPeerServer(server, {
+  path: "/peerjs",
+} as any);
+
+app.use("/peerjs", peerServer);
+
+// PeerServer event listeners
+peerServer.on("connection", (client) => {
+  console.log(`\n[PEERJS] Client connected: ${client.getId()}`);
+});
+
+peerServer.on("disconnect", (client) => {
+  console.log(`[PEERJS] Client disconnected: ${client.getId()}`);
+});
+
 const port = Number(process.env.PORT) || 3001; // Puerto 3001 por defecto
 
-io.listen(port);
+server.listen(port);
 console.log(`=`.repeat(50));
 console.log(`[SERVER] WebRTC Signaling server running on port ${port}`);
+console.log(`[PEERJS] PeerJS server running on /peerjs`);
 console.log(`[CORS] Enabled for all origins`);
 console.log(`[MODE] Multiple rooms - 2 users per room`);
 console.log(`[ENV] NODE_ENV: ${process.env.NODE_ENV || "development"}`);
