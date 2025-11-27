@@ -6,16 +6,17 @@ import http from "http";
 import "dotenv/config";
 
 /**
- * 🚀 WebRTC Signaling Server - Railway Production Ready
+ * 🚀 WebRTC Signaling Server - Heroku Production Ready
  * 
- * Deployed at: https://eisc-video-production.up.railway.app
+ * Deployed at: https://eisc-video-3ee1ac20d78b.herokuapp.com
  * 
  * Features:
  * ✅ Single unified Express + Socket.IO + PeerJS server
- * ✅ Production-safe CORS configuration
- * ✅ Railway-optimized timeouts disabled
- * ✅ WebSocket-only transport for stability
- * ✅ PeerJS server at /peerjs endpoint
+ * ✅ Heroku-safe CORS configuration
+ * ✅ Polling + WebSocket transport (Heroku router requires polling)
+ * ✅ allowEIO3: true for Heroku compatibility
+ * ✅ PeerJS with proxied: true for Heroku reverse proxy
+ * ✅ Timeouts disabled for persistent WebRTC connections
  * ✅ Detailed logging for debugging
  * ✅ Room management (max 2 users)
  * ✅ Duplicate remotePeerId prevention
@@ -31,7 +32,7 @@ interface RoomData {
 
 // ============ CONFIGURATION ============
 const PORT = Number(process.env.PORT) || 3000;
-const PUBLIC_URL = "https://eisc-video-production.up.railway.app";
+const PUBLIC_URL = "https://eisc-video-3ee1ac20d78b.herokuapp.com";
 const MAX_USERS_PER_ROOM = 2;
 const DEFAULT_ROOM = "main-room";
 
@@ -41,7 +42,7 @@ const rooms = new Map<string, RoomData>();
 // ============ EXPRESS APP ============
 const app = express();
 
-// ✅ CORS - Allow all origins (Railway proxy requires this)
+// ✅ CORS - Allow all origins (Heroku proxy rewrites headers)
 app.use(cors({
   origin: "*",
   methods: ["GET", "POST"],
@@ -50,7 +51,7 @@ app.use(cors({
 
 app.use(express.json());
 
-// Health check endpoint for Railway
+// Health check endpoint for Heroku
 app.get("/", (req, res) => {
   res.json({
     status: "online",
@@ -73,29 +74,30 @@ app.get("/health", (req, res) => {
 // ============ HTTP SERVER ============
 const server = http.createServer(app);
 
-// ✅ Fix Railway timeouts - Disable aggressive connection closing
+// ✅ Disable timeouts so Heroku doesn't kill WebRTC connections
 server.keepAliveTimeout = 0;
 server.headersTimeout = 0;
 
 // ============ SOCKET.IO SERVER ============
-// ✅ Production-safe Socket.IO configuration for Railway
+// ✅ Heroku-safe Socket.IO configuration (MUST allow polling)
 const io = new Server(server, {
   cors: {
     origin: "*",
     methods: ["GET", "POST"],
     credentials: true
   },
-  transports: ["websocket", "polling"], // WebSocket preferred, polling as fallback
+  transports: ["polling", "websocket"], // polling MUST be first for Heroku router
+  allowEIO3: true, // critical for Heroku router compatibility
   pingTimeout: 30000,
-  pingInterval: 25000,
-  allowEIO3: true // Allow Engine.IO v3 clients
+  pingInterval: 25000
 });
 
 // ============ PEERJS SERVER ============
-// ✅ Mount PeerJS at /peerjs endpoint
+// ✅ Mount PeerJS at /peerjs with Heroku proxy support
 const peerServer = ExpressPeerServer(server, {
   path: "/peerjs",
   debug: true,
+  proxied: true, // required for Heroku reverse proxy
   allow_discovery: true
 } as any);
 
@@ -357,20 +359,20 @@ const handleMediaToggle = (
 };
 
 // ============ SERVER START ============
-// ✅ Listen on Railway-provided port, bind to 0.0.0.0
+// ✅ Listen on Heroku-provided port, bind to 0.0.0.0
 server.listen(PORT, "0.0.0.0", () => {
   console.log("=".repeat(70));
-  console.log(`🚀 EISC Video Signaling Server - RAILWAY PRODUCTION`);
+  console.log(`🚀 EISC Video Signaling Server - HEROKU PRODUCTION`);
   console.log("=".repeat(70));
   console.log(`📡 Port: ${PORT}`);
   console.log(`🌐 Public URL: ${PUBLIC_URL}`);
   console.log(`🔌 Socket.IO: wss://${PUBLIC_URL.replace('https://', '')}`);
-  console.log(`📹 PeerJS: ${PUBLIC_URL}/peerjs`);
+  console.log(`📹 PeerJS: ${PUBLIC_URL}/peerjs (proxied: true)`);
   console.log(`❤️ Health: ${PUBLIC_URL}/health`);
   console.log(`🌍 CORS: Enabled for all origins`);
   console.log(`👥 Max users per room: ${MAX_USERS_PER_ROOM}`);
-  console.log(`⚡ WebSocket transport: Enabled`);
-  console.log(`🔧 Keep-alive timeout: Disabled (Railway optimized)`);
+  console.log(`⚡ Transports: [polling, websocket] (Heroku-safe)`);
+  console.log(`🔧 Keep-alive timeout: Disabled`);
   console.log(`📊 Status monitoring: Every 30s`);
   console.log("=".repeat(70));
   console.log(`✅ Server ready for WebRTC connections!`);
